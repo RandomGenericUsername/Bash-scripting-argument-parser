@@ -1,0 +1,205 @@
+#!/bin/bash
+
+# Determine the directory where this script is located
+__SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Path to print-debug located in the parent directory
+print_debug_script="$__SCRIPT_DIR/../Print debug/print-debug"
+
+# Resolve at the beginning whether to use print-debug or echo
+if [[ -x "$print_debug_script" ]]; then
+    # If print-debug exists, use it
+    print_debug() {
+        "$print_debug_script" "$@"
+    }
+else
+    echo "WARNING: print-debug script not found at $print_debug_script. Fallback to echo."  1>&2
+    echo "" 1>&2
+    # If print-debug doesn't exist, use echo as a fallback
+    print_debug() {
+        echo "$1" 1>&2 
+    }
+fi
+
+declare -A ARG_VALUES
+declare -A ARG_MULTI_VALUES
+declare -A ARG_FLAGS
+declare -A MANDATORY_ARGUMENTS_VALUES
+
+# Function to parse options and map them to variables
+set_options() {
+    while [[ "$#" -gt 0 ]]; do
+        local array_name="$1"
+        local var_name="$2"
+        shift 2
+
+        print_debug "Parsing options for array: $array_name, Variable: $var_name" -t "debug"
+
+        eval "local -a options=(\"\${${array_name}[@]}\")"
+
+        for opt in "${options[@]}"; do
+            print_debug "Mapping option $opt to variable $var_name" -t "debug"
+            ARG_VALUES["$opt"]="$var_name"
+            ARG_MULTI_VALUES["$opt"]=false
+        done
+    done
+}
+
+# Function to enable multi-value for specific arguments
+enable_multi_value_option() {
+    while [[ "$#" -gt 0 ]]; do
+        local option="$1"
+        shift
+
+        if [[ -n "${ARG_VALUES[$option]}" ]]; then
+            ARG_MULTI_VALUES["$option"]=true
+        else
+            print_debug "Error: $option is not a recognized option" -t "error"
+            exit 1
+        fi
+    done
+}
+
+# Function to enable flags (options without values)
+enable_flag() {
+    while [[ "$#" -gt 0 ]]; do
+        local option="$1"
+        shift
+
+        if [[ -n "${ARG_VALUES[$option]}" ]]; then
+            ARG_FLAGS["$option"]=true
+        else
+            print_debug "Error: $option is not a recognized option" -t "error"
+            exit 1
+        fi
+    done
+}
+
+get_arg_value() {
+    local var_name=$1
+    print_debug "Getting value of $var_name" -t "debug"
+    if [[ "$(declare -p $var_name 2>/dev/null)" =~ "declare -a" ]]; then
+        eval "echo \${$var_name[@]}"
+    else
+        echo "${!var_name}"
+    fi
+}
+
+# Function to set mandatory arguments and their allowed values by coordinate
+set_mandatory_arguments() {
+    local num_args="$1"
+    shift
+
+    # Set the number of mandatory arguments
+    export MANDATORY_ARGUMENTS="$num_args"
+
+    print_debug "Setting $num_args mandatory arguments" -t "debug"
+
+    # Loop through the arguments to parse pairs (coordinate and values)
+    while [[ "$#" -gt 0 ]]; do
+        # Extract the coordinate and its allowed values
+        local coord="${1%%:*}"  # Extract the coordinate number before the colon
+        local values="${1#*:}"  # Extract the values after the colon, preserving spaces
+        shift
+
+        # Ensure the coordinate is within the number of mandatory arguments
+        if [[ "$coord" -gt "$num_args" ]]; then
+            exit 1
+        fi
+
+        print_debug "Setting allowed values for position $coord: $values" -t "debug"
+
+        # Store the allowed values for this coordinate as a space-separated string
+        MANDATORY_ARGUMENTS_VALUES["$coord"]="$values"
+    done
+}
+
+# Function to validate positional arguments against allowed values
+validate_positional_argument() {
+    local arg="$1"
+    local position="$2"
+    local allowed_values="${MANDATORY_ARGUMENTS_VALUES[$position]}"
+
+    print_debug "Validating argument '$arg' for position $position against allowed values: $allowed_values" -t "debug"
+
+    if [[ -n "$allowed_values" ]]; then
+        local found=false
+        for value in $allowed_values; do
+            print_debug "Checking if '$arg' matches '$value'" -t "debug"
+            if [[ "$arg" == "$value" ]]; then
+                found=true
+                break
+            fi
+        done
+
+        if [[ "$found" == false ]]; then
+            print_debug "Error: Argument '$arg' is not allowed for position $position." -t "error"
+            print_debug "Allowed values for position $position: $allowed_values" -t "debug"
+            exit 1
+        fi
+    fi
+}
+
+# Function to add a positional argument to the list
+add_positional_argument() {
+    local arg="$1"
+    positional_args+=("$arg")
+    print_debug "Adding $arg to positional arguments" -t "debug"
+}
+
+# Function to validate all positional arguments
+validate_all_positional_arguments() {
+    for ((i = 1; i <= $MANDATORY_ARGUMENTS; i++)); do
+        validate_positional_argument "${POSITIONAL_ARGS[i-1]}" "$i"
+    done
+}
+
+# Function to parse command line arguments
+parse_command_line() {
+    local positional_args=()
+    print_debug "Parsing command line arguments..." -t "debug"
+
+    # Initialize all flags
+    for flag in "${!ARG_FLAGS[@]}"; do
+        eval "${ARG_VALUES[$flag]}=false"
+    done
+
+    while [[ "$#" -gt 0 ]]; do
+        if [[ -n "${ARG_VALUES[$1]}" ]]; then
+            local key="$1"
+            shift
+
+            if [[ "${ARG_FLAGS[$key]}" == true ]]; then
+                eval "${ARG_VALUES[$key]}=true"
+            elif [[ "${ARG_MULTI_VALUES[$key]}" == true ]]; then
+                while [[ -n "$1" && "$1" != -* ]]; do
+                    eval "${ARG_VALUES[$key]}+=(\"$1\")"
+                    shift
+                done
+            else
+                if [[ -n "$1" && "${1:0:1}" != "-" ]]; then
+                    eval "${ARG_VALUES[$key]}=\"$1\""
+                    shift
+                else
+                    print_debug "Error: $key requires a non-empty argument." -t "error"
+                    exit 1
+                fi
+            fi
+        else
+            add_positional_argument "$1"
+            shift
+        fi
+    done
+
+    export POSITIONAL_ARGS=("${positional_args[@]}")
+    print_debug "Positional arguments captured: ${POSITIONAL_ARGS[*]}" -t "debug"
+
+    if [[ "${MANDATORY_ARGUMENTS:-0}" -gt 0 ]]; then
+        if [[ ${#POSITIONAL_ARGS[@]} -lt $MANDATORY_ARGUMENTS ]]; then
+            print_debug "Error: At least $MANDATORY_ARGUMENTS positional argument(s) required, but only ${#POSITIONAL_ARGS[@]} provided => { ${POSITIONAL_ARGS[*]} }" -t "error"
+            exit 1
+        fi
+
+        validate_all_positional_arguments
+    fi
+}
