@@ -4,7 +4,7 @@
 __SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Path to print-debug located in the parent directory
-print_debug_script="$__SCRIPT_DIR/../Print debug/print-debug"
+print_debug_script="$__SCRIPT_DIR/../print-debug/print-debug"
 
 # Resolve at the beginning whether to use print-debug or echo
 if [[ -x "$print_debug_script" ]]; then
